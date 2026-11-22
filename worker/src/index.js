@@ -6,7 +6,7 @@
 //                    message: string, history?: [{role, content}] }
 // GET  /api/health
 //
-// Secrets (wrangler secret put …): GROQ_API_KEY, DEEPSEEK_API_KEY, QWEN_API_KEY,
+// Secrets (wrangler secret put …): ACCESS_KEY (required — header X-Access-Key on POST), GROQ_API_KEY, DEEPSEEK_API_KEY, QWEN_API_KEY,
 //   GEMINI_API_KEY, ANTHROPIC_API_KEY — any missing provider is skipped.
 // Binding: AI (Workers AI) — first in the cascade, free tier.
 // Vars: ALLOWED_ORIGINS (comma-separated), *_MODEL overrides.
@@ -38,7 +38,7 @@ function corsHeaders(request, env) {
   return {
     "Access-Control-Allow-Origin": ok && origin ? origin : allowed[0] || "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, X-Access-Key",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
@@ -49,6 +49,13 @@ function json(body, status, cors) {
     status,
     headers: { "content-type": "application/json; charset=utf-8", ...cors },
   });
+}
+
+// Constant-time compare for the access key.
+function keyOk(given, want) {
+  let d = given.length ^ want.length;
+  for (let i = 0; i < Math.max(given.length, want.length); i++) d |= (given.charCodeAt(i) || 0) ^ (want.charCodeAt(i) || 0);
+  return d === 0;
 }
 
 function withTimeout(ms) {
@@ -153,6 +160,13 @@ export default {
 
     if (url.pathname !== "/api/chat" && url.pathname !== "/") return json({ error: "not_found" }, 404, cors);
     if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405, cors);
+
+    // Closed by key: fail closed when ACCESS_KEY is not configured (wrangler secret put ACCESS_KEY).
+    if (!env.ACCESS_KEY) return json({ error: "access_key_not_configured" }, 503, cors);
+    if (!keyOk(request.headers.get("x-access-key") || "", env.ACCESS_KEY)) {
+      await new Promise((r) => setTimeout(r, 400));
+      return json({ error: "unauthorized" }, 401, cors);
+    }
 
     let body;
     try {
